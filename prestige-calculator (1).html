@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Prestige — Development Cost Calculator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#F9F7F2;font-family:'DM Sans',sans-serif}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
+input:focus,textarea:focus,select:focus{outline:none!important;border-color:#B8960C!important;box-shadow:0 0 0 3px rgba(185,150,12,0.12)!important}
+input[type=range]{accent-color:#B8960C}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toast{position:fixed;bottom:28px;right:28px;background:#0D1F3C;color:#D4AF5A;padding:11px 22px;border-radius:6px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;z-index:9997;box-shadow:0 8px 32px rgba(0,0,0,0.3);animation:fadeIn 0.25s ease}
+@media print{.no-print{display:none!important}body{background:white!important}*{box-shadow:none!important}.card-print{border:1px solid #ddd!important;margin-bottom:16px!important;page-break-inside:avoid}.print-footer{display:block!important}}
+.print-footer{display:none}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback}=React;
+const M="#0D1F3C",G="#B8960C",GL="#D4AF5A",GLA="#F5EDD6",BG="#F9F7F2";
+const n=v=>parseFloat(v)||0;
+const fmt=v=>"€"+n(v).toLocaleString("en",{minimumFractionDigits:2,maximumFractionDigits:2});
+const pct=v=>n(v).toFixed(2)+"%";
+const uid=()=>Math.random().toString(36).substr(2,9);
+const ts=()=>new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
+const tod=()=>new Date().toISOString().split("T")[0];
+const lsGet=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}};
+const lsSet=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
+
+const FK=["basement","ground","first","second","third","fourth","penthouse"];
+const FL={basement:"Basement Level",ground:"Ground Floor",first:"First Floor",second:"Second Floor",third:"Third Floor",fourth:"Fourth Floor",penthouse:"Penthouse Level"};
+const FINK=["Scaffolding - Erection & Dismantling","Scaffolding - Rent","Basement Level","Ground Floor","First Floor","Second Floor","Third Floor","Fourth Floor","Penthouse Level","Terraces","Backyard & Front Garden","Common Parts"];
+const MISCK=["Roof Screed","Garage Floors","Landscaping","Services Culvert","Pavement Finishes"];
+const EXK=["Tower Crane","Concrete Block Retaining Walls","Piling Works","Capping Beams","Platform"];
+const OTHK=["Contract Fees","Stamp Duty","PA Permits","Loss of Parking Spaces (UIF)","Insurance Policies","Ground Investigation Report","OHS & STO"];
+const RCATS=["All","Demolition","Excavation","Construction Shell","Finishing Works","Plastering","Miscellaneous","Architect","Other"];
+const RUNITS=["€/m²","€/yd³","€/hr","€ lump sum","€/linear m","€/unit"];
+const UM={"EURm2":"€/m²","EURyd3":"€/yd³","EURhr":"€/hr","EURlump":"€ lump sum","EURlinm":"€/linear m","EURunit":"€/unit"};
+const EP="Extract all rate/price line items from this contractor quote. Return ONLY a valid JSON array, no markdown, no backticks, no preamble. Each object: contractor (company name), date (YYYY-MM-DD), category (one of: Demolition Excavation Construction-Shell Finishing-Works Plastering Miscellaneous Architect Other), item (work description), rate (numeric string only no currency), unit (one of: EURm2 EURyd3 EURhr EURlump EURlinm EURunit), notes (conditions or empty string).";
+
+const newRow=()=>({id:uid(),label:"",on:true,mode:"lump",value:"",rate:""});
+const newRE=()=>({id:uid(),contractor:"",date:tod(),category:"Construction Shell",item:"",rate:"",unit:"€/m²",notes:"",active:false});
+const defPF=()=>[
+  {id:"basement",label:"Basement",area:"",doors:"",windows:"",mw:"",on:true},
+  {id:"ground",label:"Ground Floor",area:"",doors:"",windows:"",mw:"",on:true},
+  {id:"first",label:"First Floor",area:"",doors:"",windows:"",mw:"",on:true},
+  {id:"second",label:"Second Floor",area:"",doors:"",windows:"",mw:"",on:true},
+  {id:"third",label:"Third Floor",area:"",doors:"",windows:"",mw:"",on:true},
+  {id:"fourth",label:"Fourth Floor",area:"",doors:"",windows:"",mw:"",on:false},
+  {id:"penthouse",label:"Penthouse Level",area:"",doors:"",windows:"",mw:"",on:true},
+];
+
+const defProject=()=>({
+  id:uid(),name:"New Project",lastEdited:ts(),
+  site:{address:"",date:tod(),purchasePrice:"",footprint:"",depth:""},
+  demo:"",demoCustom:[],
+  excavRate:"30",excavManual:false,excavOverride:"",excavCustom:[],
+  floors:FK.reduce((a,k)=>({...a,[k]:{sqm:"",rate:""}}),{}),
+  common:{mode:"sqm",sqm:"",rate:"",lump:""},backyard:"",s3Custom:[],
+  archOn:true,archManual:false,archOverride:"",
+  fin:FINK.reduce((a,k)=>({...a,[k]:{on:false,mode:"lump",value:"",rate:""}}),{}),finCustom:[],
+  misc:MISCK.reduce((a,k)=>({...a,[k]:{on:false,value:""}}),{}),miscCustom:[],
+  ex:EXK.reduce((a,k)=>({...a,[k]:{on:false,value:""}}),{}),exCustom:[],
+  other:OTHK.reduce((a,k)=>({...a,[k]:{on:false,value:""}}),{}),otherCustom:[],
+  contingOn:true,vatOn:true,
+  units:[{id:uid(),name:"",qty:"",price:""}],targetMargin:"20",totalUnitsTarget:"",
+  notes:{s1:"",s2:"",s3:"",s4:"",s5:"",s6:"",s7:"",s8:""},
+});
+
+function calc(p){
+  const fp=n(p.site.footprint),m3=fp*n(p.site.depth),yds=m3*1.30795,exAuto=yds*n(p.excavRate);
+  const s1=n(p.demo)+(p.demoCustom||[]).reduce((a,r)=>a+(r.on?n(r.value):0),0);
+  const s2=(p.excavManual?n(p.excavOverride):exAuto)+(p.excavCustom||[]).reduce((a,r)=>a+(r.on?n(r.value):0),0);
+  const fs=FK.reduce((a,k)=>a+n(p.floors[k].sqm)*n(p.floors[k].rate),0);
+  const ct=p.common.mode==="sqm"?n(p.common.sqm)*n(p.common.rate):n(p.common.lump);
+  const s3=fs+ct+n(p.backyard)+(p.s3Custom||[]).reduce((a,r)=>a+(r.on?n(r.value):0),0);
+  const aAuto=s3*0.02,aT=p.archOn?(p.archManual?n(p.archOverride):aAuto):0;
+  const s4=Object.entries(p.fin).reduce((a,[,v])=>a+(v.on?(v.mode==="lump"?n(v.value):n(v.rate)*fp):0),0)+(p.finCustom||[]).reduce((a,r)=>a+(r.on?(r.mode==="lump"?n(r.value):n(r.rate)*fp):0),0);
+  const s5=Object.values(p.misc).reduce((a,v)=>a+(v.on?n(v.value):0),0)+(p.miscCustom||[]).reduce((a,r)=>a+(r.on?n(r.value):0),0);
+  const s6=Object.values(p.ex).reduce((a,v)=>a+(v.on?n(v.value):0),0)+(p.exCustom||[]).reduce((a,r)=>a+(r.on?n(r.value):0),0);
+  const s8=n(p.site.purchasePrice)+Object.values(p.other).reduce((a,v)=>a+(v.on?n(v.value):0),0)+(p.otherCustom||[]).reduce((a,r)=>a+(r.on?n(r.value):0),0);
+  const sub=s1+s2+s3+s4+s5+s6+aT,cont=p.contingOn?(s3+s4)*0.1:0,pv=sub+cont,vat=p.vatOn?pv*0.18:0,cc=pv+vat,gt=cc+s8;
+  const tu=p.units.reduce((a,u)=>a+n(u.qty),0),gr=p.units.reduce((a,u)=>a+n(u.qty)*n(u.price),0);
+  const af=gr*0.05,av=af*0.18,vt=gr*0.08,np=gr-af-av-vt-gt,nm=gr>0?(np/gr)*100:0;
+  const tm=n(p.targetMargin)/100,den=0.861-tm,sr=den>0&&gt>0?gt/den:0;
+  const tgt=n(p.totalUnitsTarget),spu=(tgt>0?tgt:tu)>0?sr/(tgt>0?tgt:tu):0;
+  const tba=FK.reduce((a,k)=>a+n(p.floors[k].sqm),0)+(p.common.mode==="sqm"?n(p.common.sqm):0);
+  const cpsm=tba>0?gt/tba:0,roi=gt>0?(np/gt)*100:0,beu=tu>0?gt/(tu*0.861):0;
+  const sens=[-20,-15,-10,-5,0,5,10].map(dp=>{const r=gr*(1+dp/100),f=r*0.05,fv=f*0.18,v2=r*0.08,pr=r-f-fv-v2-gt;return{dp,rev:r,profit:pr,margin:r>0?(pr/r)*100:0};});
+  return{m3,yds,exAuto,s1,s2,s3,s4,s5,s6,s8,aAuto,aT,sub,cont,pv,vat,cc,gt,tu,gr,af,av,vt,np,nm,sr,spu,tgt,tba,cpsm,roi,beu,sens,ct,fs};
+}
+
+function calcLF(lf){
+  const land=n(lf.landPrice),units=n(lf.units),floors=n(lf.floors);
+  const bpf=n(lf.builtArea),tb=bpf*floors,cc=tb*n(lf.constCostSqm),ti=land+cc;
+  const tm=n(lf.margin)/100,den=0.861-tm;
+  const rGDV=den>0&&ti>0?ti/den:0,rPPU=units>0?rGDV/units:0;
+  const mGDV=n(lf.mktPrice)*units,mAF=mGDV*0.05,mAV=mAF*0.18,mVT=mGDV*0.08;
+  const mNP=mGDV-mAF-mAV-mVT-ti,mMarg=mGDV>0?(mNP/mGDV)*100:0;
+  const maxL=den>0?mGDV*(0.861-tm)-cc:0,cpsm=tb>0?ti/tb:0;
+  const sig=mMarg>=n(lf.margin)?"green":mMarg>=n(lf.margin)-5?"amber":"red";
+  return{tb,cc,ti,rGDV,rPPU,mGDV,mNP,mMarg,maxL,cpsm,sig};
+}
+
+const IS={width:"100%",padding:"8px 12px",border:"1px solid #ddd",borderRadius:4,fontSize:13,fontFamily:"'DM Sans',sans-serif",background:"white",color:M,boxSizing:"border-box"};
+const DIS={...IS,background:"#f5f5f5",color:"#999"};
+const GIS={...IS,borderColor:G,background:GLA};
+const LBL={fontSize:12,color:"#666",fontFamily:"'DM Sans',sans-serif",fontWeight:500,marginBottom:4};
+const CARD={background:"white",borderRadius:8,boxShadow:"0 2px 16px rgba(13,31,60,0.07)",marginBottom:24,overflow:"hidden",border:"1px solid rgba(184,150,12,0.12)"};
+
+function NI({value,onChange,placeholder,disabled,style}){return <input type="number" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||"0.00"} disabled={disabled} style={{...(disabled?DIS:IS),...style}}/>;}
+function TI({value,onChange,placeholder,style}){return <input type="text" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={{...IS,...style}}/>;}
+function Tog({on,onChange,labels}){const[a,b]=labels||["ON","OFF"];return <button onClick={()=>onChange(!on)} style={{padding:"4px 14px",borderRadius:20,border:`1px solid ${on?G:"#ccc"}`,background:on?G:"white",color:on?"white":"#aaa",fontSize:11,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,whiteSpace:"nowrap",flexShrink:0}}>{on?a:b}</button>;}
+function SH({num,title,subtitle}){return <div style={{background:M,padding:"13px 20px",borderRadius:"8px 8px 0 0"}}><div style={{display:"flex",alignItems:"baseline",gap:10}}><span style={{fontFamily:"'Playfair Display',serif",color:GL,fontSize:11,opacity:0.8}}>{num}</span><span style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:17,fontWeight:600}}>{title}</span></div>{subtitle&&<div style={{fontSize:11,color:"rgba(212,175,90,0.6)",marginTop:2}}>{subtitle}</div>}</div>;}
+function TR({label,value,highlight,large,muted}){return <div style={{display:"flex",justifyContent:"space-between",padding:highlight?"12px 20px":"10px 20px",background:highlight?GLA:"white",borderTop:"1px solid #f0ede6",fontFamily:"'DM Sans',sans-serif"}}><span style={{fontSize:muted?12:13,color:muted?"#aaa":"#555",fontWeight:highlight?600:400}}>{label}</span><span style={{fontSize:large?16:13,fontWeight:highlight?700:600,color:highlight?M:"#888"}}>{fmt(value)}</span></div>;}
+function ColH({children}){return <div style={{fontSize:10,color:G,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:1}}>{children}</div>;}
+function KPI({label,value}){return <div style={{padding:"13px 20px",textAlign:"center",borderRight:"1px solid rgba(184,150,12,0.15)"}}><div style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{label}</div><div style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:15,fontWeight:600}}>{value}</div></div>;}
+function NoteField({value,onChange}){const[o,sO]=useState(false);return <div style={{padding:"0 20px 10px"}}><button onClick={()=>sO(x=>!x)} style={{fontSize:11,color:o?G:"#bbb",background:"none",border:"none",cursor:"pointer",fontFamily:"'DM Sans',sans-serif",padding:0}}>{o?"Hide Notes":"+ Notes"}</button>{o&&<textarea value={value} onChange={e=>onChange(e.target.value)} placeholder="Notes, assumptions, contractor references..." rows={2} style={{...IS,marginTop:8,resize:"vertical",lineHeight:1.5}}/>}</div>;}
+function CustomRows({rows,onChange,hasMode,fp}){
+  const add=()=>onChange([...rows,newRow()]);
+  const rm=id=>onChange(rows.filter(r=>r.id!==id));
+  const upd=(id,f,v)=>onChange(rows.map(r=>r.id===id?{...r,[f]:v}:r));
+  return <div style={{padding:"0 20px 10px"}}>
+    {rows.map(r=><div key={r.id} style={{display:"grid",gridTemplateColumns:hasMode?"2fr 50px 65px 1fr 22px":"2fr 50px 1fr 22px",gap:7,marginBottom:5,alignItems:"center",opacity:r.on?1:0.5}}>
+      <TI value={r.label} onChange={v=>upd(r.id,"label",v)} placeholder="Custom item..."/>
+      <Tog on={r.on} onChange={v=>upd(r.id,"on",v)}/>
+      {hasMode&&<button onClick={()=>upd(r.id,"mode",r.mode==="lump"?"sqm":"lump")} disabled={!r.on} style={{fontSize:10,padding:"3px 7px",borderRadius:20,border:`1px solid ${G}`,background:"white",color:G,cursor:"pointer",opacity:r.on?1:0.35}}>{r.mode==="lump"?"Lump":"€/m²"}</button>}
+      {hasMode&&r.mode==="sqm"?<NI value={r.rate} onChange={v=>upd(r.id,"rate",v)} disabled={!r.on} placeholder="€/m²"/>:<NI value={r.value} onChange={v=>upd(r.id,"value",v)} disabled={!r.on} placeholder="€"/>}
+      <button onClick={()=>rm(r.id)} style={{background:"none",border:"none",color:"#ccc",cursor:"pointer",fontSize:16,padding:0}}>×</button>
+    </div>)}
+    <button onClick={add} style={{fontSize:11,color:G,background:"none",border:`1px dashed ${G}`,borderRadius:4,cursor:"pointer",padding:"4px 10px",fontFamily:"'DM Sans',sans-serif"}}>+ Add Row</button>
+  </div>;
+}
+
+function App(){
+  const [projects,setProjects]=useState(null);
+  const [curId,setCurId]=useState(null);
+  const [rateLib,setRateLib]=useState([]);
+  const [newRate,setNewRate]=useState(newRE());
+  const [rlFilter,setRlFilter]=useState("All");
+  const [lf,setLf]=useState({address:"",date:tod(),agentName:"",landPrice:"",footprint:"",floors:"",units:"",builtArea:"",constCostSqm:"",margin:"20",mktPrice:"",notes:""});
+  const [tab,setTab]=useState("calc");
+  const [cmpId,setCmpId]=useState(null);
+  const [resetConfirm,setResetConfirm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loaded,setLoaded]=useState(false);
+  const [disclaim,setDisclaim]=useState(true);
+  const [dChk,setDChk]=useState(false);
+  const [toast,setToast]=useState("");
+  const [upState,setUpState]=useState("idle");
+  const [extracted,setExtracted]=useState([]);
+  const [upErr,setUpErr]=useState("");
+  const [pasteText,setPasteText]=useState("");
+  const [pf,setPf]=useState(defPF());
+  const [pMult,setPMult]=useState("2.3");
+  const [pH,setPH]=useState("2.7");
+  const [pRate,setPRate]=useState("");
+  const [pCont,setPCont]=useState("10");
+  const [pMode,setPMode]=useState("approx");
+
+  const showToast=(msg)=>{setToast(msg);setTimeout(()=>setToast(""),2500);};
+  const upPF=(id,f,v)=>setPf(prev=>prev.map(r=>r.id===id?{...r,[f]:v}:r));
+
+  useEffect(()=>{
+    const pr=lsGet("px:projects",null),cu=lsGet("px:curId",null),rl=lsGet("px:rateLib",[]),da=lsGet("px:disc",null);
+    const lp=pr||[defProject()];
+    setProjects(lp);setCurId(cu||lp[0].id);setRateLib(rl);
+    if(da)setDisclaim(false);
+    setLoaded(true);
+  },[]);
+
+  useEffect(()=>{
+    if(!loaded||!projects||!curId)return;
+    const t=setTimeout(()=>{setSaving(true);lsSet("px:projects",projects);lsSet("px:curId",curId);lsSet("px:rateLib",rateLib);setTimeout(()=>setSaving(false),400);},700);
+    return()=>clearTimeout(t);
+  },[projects,curId,rateLib,loaded]);
+
+  const cur=projects?.find(p=>p.id===curId)||projects?.[0];
+  const upd=useCallback(fn=>setProjects(prev=>prev.map(p=>p.id===curId?{...fn(p),lastEdited:ts()}:p)),[curId]);
+  const set=useCallback((k,v)=>upd(p=>({...p,[k]:v})),[upd]);
+  const setSite=useCallback((k,v)=>upd(p=>({...p,site:{...p.site,[k]:v}})),[upd]);
+  const setNote=useCallback((k,v)=>upd(p=>({...p,notes:{...p.notes,[k]:v}})),[upd]);
+  const setFloor=useCallback((fk,f,v)=>upd(p=>({...p,floors:{...p.floors,[fk]:{...p.floors[fk],[f]:v}}})),[upd]);
+  const setFin=useCallback((fk,f,v)=>upd(p=>({...p,fin:{...p.fin,[fk]:{...p.fin[fk],[f]:v}}})),[upd]);
+  const setMisc=useCallback((fk,f,v)=>upd(p=>({...p,misc:{...p.misc,[fk]:{...p.misc[fk],[f]:v}}})),[upd]);
+  const setEx=useCallback((fk,f,v)=>upd(p=>({...p,ex:{...p.ex,[fk]:{...p.ex[fk],[f]:v}}})),[upd]);
+  const setOther=useCallback((fk,f,v)=>upd(p=>({...p,other:{...p.other,[fk]:{...p.other[fk],[f]:v}}})),[upd]);
+  const setUnit=(id,f,v)=>upd(p=>({...p,units:p.units.map(u=>u.id===id?{...u,[f]:v}:u)}));
+  const addUnit=()=>upd(p=>({...p,units:[...p.units,{id:uid(),name:"",qty:"",price:""}]}));
+  const rmUnit=id=>upd(p=>({...p,units:p.units.filter(u=>u.id!==id)}));
+  const handleSave=()=>{setSaving(true);lsSet("px:projects",projects);lsSet("px:curId",curId);lsSet("px:rateLib",rateLib);setTimeout(()=>{setSaving(false);showToast("Project saved");},400);};
+  const handleNew=()=>{const p=defProject();setProjects(prev=>[...prev,p]);setCurId(p.id);setTab("calc");showToast("New project created");};
+  const dupProject=()=>{const p={...JSON.parse(JSON.stringify(cur)),id:uid(),name:cur.name+" (Copy)",lastEdited:ts()};setProjects(prev=>[...prev,p]);setCurId(p.id);setTab("calc");showToast("Project duplicated");};
+  const delProject=id=>{setProjects(prev=>{const nx=prev.filter(p=>p.id!==id);if(id===curId)setCurId(nx[0]?.id);return nx.length?nx:[defProject()];});};
+  const resetProject=()=>{const p=defProject();setProjects(prev=>prev.map(q=>q.id===curId?p:q));setCurId(p.id);setResetConfirm(false);showToast("Project reset");};
+  const acceptDisc=()=>{if(!dChk)return;lsSet("px:disc",{accepted:true});setDisclaim(false);};
+
+  const callAPI=async(messages)=>{
+    const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages})});
+    const data=await res.json();
+    if(data.error)throw new Error(data.error.message||"API error");
+    const txt=data.content.filter(i=>i.type==="text").map(i=>i.text).join("");
+    return JSON.parse(txt.replace(/```json|```/g,"").trim());
+  };
+
+  const applyExtracted=(parsed)=>{setExtracted(parsed.map(r=>({...r,id:uid(),selected:true,unit:UM[r.unit]||r.unit||"€ lump sum"})));setUpState("preview");};
+
+  const parseRatesFromText=async(text)=>{
+    setUpState("extracting");setUpErr("");
+    try{const p=await callAPI([{role:"user",content:[{type:"text",text:EP+"\n\nQuote text:\n\n"+text}]}]);applyExtracted(p);}
+    catch(e){if(e.message==="Failed to fetch"||e.message.includes("NetworkError")||e.message.includes("network")){setUpState("pastemode");}else{setUpState("error");setUpErr(e.message);}}
+  };
+
+  const handleUpload=async(file)=>{
+    if(!file)return;
+    const ext=file.name.split(".").pop().toLowerCase();
+    setUpState("extracting");setUpErr("");
+    try{
+      if(ext==="pdf"){
+        const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
+        const p=await callAPI([{role:"user",content:[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:EP}]}]);
+        applyExtracted(p);
+      } else if(["xlsx","xls"].includes(ext)){
+        const ab=await file.arrayBuffer();
+        const wb=window.XLSX.read(ab,{type:"array"});
+        let text="";wb.SheetNames.forEach(s=>{text+="Sheet: "+s+"\n"+window.XLSX.utils.sheet_to_csv(wb.Sheets[s])+"\n\n";});
+        await parseRatesFromText(text);
+      } else if(["doc","docx"].includes(ext)){
+        const ab=await file.arrayBuffer();
+        const result=await window.mammoth.extractRawText({arrayBuffer:ab});
+        await parseRatesFromText(result.value);
+      } else {
+        const text=await file.text();
+        await parseRatesFromText(text);
+      }
+    }catch(e){
+      if(e.message==="Failed to fetch"||e.message.includes("NetworkError")){setUpState("pastemode");}
+      else{setUpState("error");setUpErr(e.message||"Could not read file");}
+    }
+  };
+
+  const confirmExtracted=()=>{
+    const toAdd=extracted.filter(r=>r.selected).map(r=>({id:uid(),contractor:r.contractor,date:r.date,category:r.category.replace("-"," "),item:r.item,rate:r.rate,unit:r.unit,notes:r.notes,active:false}));
+    setRateLib(prev=>[...prev,...toAdd]);setUpState("idle");setExtracted([]);setPasteText("");
+    showToast(toAdd.length+" rate"+(toAdd.length===1?"":"s")+" added to library");
+  };
+
+  const addRateEntry=()=>{
+    if(!newRate.contractor||!newRate.item||!newRate.rate){showToast("Please fill contractor, item and rate");return;}
+    setRateLib(prev=>[...prev,{...newRate,id:uid()}]);setNewRate(newRE());showToast("Rate entry added");
+  };
+
+  const plCalc=(fl)=>{
+    const area=n(fl.area),h=n(pH);
+    let walls=0;
+    if(pMode==="manual"){walls=n(fl.mw||0);}
+    else{const wg=area*n(pMult)*h;const dd=n(fl.doors)*0.9*2.1;const wd=n(fl.windows)*1.2*1.4;walls=Math.max(0,wg-dd-wd);}
+    return{walls,ceiling:area,total:walls+area};
+  };
+  const plTot=pf.filter(f=>f.on).reduce((a,f)=>{const c=plCalc(f);return{walls:a.walls+c.walls,ceiling:a.ceiling+c.ceiling,total:a.total+c.total};},{walls:0,ceiling:0,total:0});
+  const plCont2=plTot.total*(n(pCont)/100),plGrand=plTot.total+plCont2,plCost=plGrand*n(pRate);
+
+  if(!loaded||!cur)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:M,color:GL,fontFamily:"'Playfair Display',serif",fontSize:20}}>Loading Prestige...</div>;
+
+  const C=calc(cur),LFC=calcLF(lf),cmp=projects.find(p=>p.id===cmpId),CMPC=cmp?calc(cmp):null,fp=n(cur.site.footprint);
+  const TABS=[["calc","Calculator"],["summary","Summary"],["sensitivity","Sensitivity"],["compare","Compare"],["ratelib","Rate Library"],["landfeas","Land Feasibility"],["plaster","Plastering"],["projects","Projects"]];
+  const rlShow=rlFilter==="All"?rateLib:rateLib.filter(r=>r.category===rlFilter);
+  const sigC=LFC.sig==="green"?"#27ae60":LFC.sig==="amber"?"#f39c12":"#c0392b";
+  const DPARAS=["This feasibility study has been prepared by Prestige Property Investment Ltd (C-98384), registered at 50/52, Vjal De Paule, Balzan BZN 9022, Malta, for indicative purposes only. All figures, rates and estimates are based on information available at the date of calculation and are subject to change without notice.","Construction costs, finishing rates and excavation rates reflect current market conditions and may vary depending on site-specific conditions, contractor pricing, material costs and prevailing economic factors at the time of engagement.","Sales values are estimates based on current market intelligence and do not constitute a formal valuation or guarantee of achievable prices.","VAT at 18%, agency fees at 5% and vendor tax at 8% are applied in accordance with rates applicable at the time of preparation and are subject to legislative change.","Planning Authority permit fees, UIF contributions and other statutory costs are indicative and should be confirmed directly with the relevant authorities prior to commitment.","Prestige Property Investment Ltd accepts no liability for decisions made on the basis of this calculator. Recipients are advised to seek independent legal, financial and technical advice before proceeding.","This document is confidential and prepared exclusively for the named recipient. Not for wider distribution without the express consent of Prestige Property Investment Ltd."];
+
+  return <div style={{background:BG,minHeight:"100vh"}}>
+    {toast&&<div className="toast">{toast}</div>}
+
+    {disclaim&&<div style={{position:"fixed",inset:0,background:"rgba(7,16,32,0.93)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"white",borderRadius:10,maxWidth:660,width:"100%",maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 32px 80px rgba(0,0,0,0.5)"}}>
+        <div style={{background:M,padding:"26px 30px 18px",flexShrink:0}}>
+          <div style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:11,letterSpacing:"0.3em",marginBottom:5}}>PRESTIGE PROPERTY INVESTMENT LTD</div>
+          <div style={{fontFamily:"'Playfair Display',serif",color:GL,fontSize:21,fontWeight:600}}>Important Disclaimer</div>
+          <div style={{color:"rgba(212,175,90,0.6)",fontSize:11,marginTop:3}}>Please read carefully before proceeding</div>
+        </div>
+        <div style={{height:3,background:"linear-gradient(90deg,#B8960C,#D4AF5A,#B8960C)",flexShrink:0}}/>
+        <div style={{padding:"22px 30px",overflowY:"auto",flex:1}}>
+          {DPARAS.map((p,i)=><p key={i} style={{fontSize:13,color:"#444",lineHeight:1.8,marginBottom:i<DPARAS.length-1?13:0,fontFamily:"'DM Sans',sans-serif"}}>{p}</p>)}
+        </div>
+        <div style={{padding:"18px 30px",borderTop:"1px solid #f0ede6",background:"#fafaf8",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"flex-start",gap:12,marginBottom:18,cursor:"pointer"}} onClick={()=>setDChk(v=>!v)}>
+            <div style={{width:20,height:20,border:`2px solid ${dChk?G:"#ccc"}`,borderRadius:3,background:dChk?G:"white",flexShrink:0,marginTop:1,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              {dChk&&<span style={{color:"white",fontSize:12,fontWeight:700,lineHeight:1}}>✓</span>}
+            </div>
+            <span style={{fontSize:13,color:"#555",fontFamily:"'DM Sans',sans-serif",lineHeight:1.6}}>I have read and understood this disclaimer. I acknowledge that all figures are indicative only and I will seek independent professional advice before making any investment decisions.</span>
+          </div>
+          <button onClick={acceptDisc} disabled={!dChk} style={{width:"100%",padding:"12px 24px",background:dChk?M:"#ccc",color:"white",border:"none",borderRadius:5,cursor:dChk?"pointer":"not-allowed",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:14}}>I Accept &amp; Proceed</button>
+          <div style={{marginTop:10,fontSize:10,color:"#bbb",textAlign:"center"}}>Prestige Property Investment Ltd · C-98384 · 50/52, Vjal De Paule, Balzan BZN 9022, Malta</div>
+        </div>
+      </div>
+    </div>}
+
+    {resetConfirm&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9998,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"white",borderRadius:8,padding:30,maxWidth:340,textAlign:"center",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+        <div style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:19,marginBottom:10}}>Reset Project?</div>
+        <div style={{color:"#666",fontSize:13,marginBottom:22,lineHeight:1.7}}>Clear all data for <strong>{cur.name}</strong>. Cannot be undone.</div>
+        <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+          <button onClick={()=>setResetConfirm(false)} style={{padding:"9px 22px",border:"1px solid #ddd",borderRadius:4,background:"white",cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:13}}>Cancel</button>
+          <button onClick={resetProject} style={{padding:"9px 22px",border:"none",borderRadius:4,background:"#c0392b",color:"white",cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:13}}>Reset</button>
+        </div>
+      </div>
+    </div>}
+
+    {upState!=="idle"&&<div style={{position:"fixed",inset:0,background:"rgba(7,16,32,0.92)",zIndex:9996,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"white",borderRadius:10,maxWidth:780,width:"100%",maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 32px 80px rgba(0,0,0,0.5)"}}>
+        <div style={{background:M,padding:"18px 26px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+          <div>
+            <div style={{fontFamily:"'Playfair Display',serif",color:GL,fontSize:18,fontWeight:600}}>
+              {upState==="extracting"?"Reading Quote...":upState==="error"?"Extraction Failed":upState==="pastemode"?"Paste Quote Text":"Review Extracted Rates"}
+            </div>
+            <div style={{color:"rgba(212,175,90,0.55)",fontSize:11,marginTop:2}}>
+              {upState==="extracting"?"Claude is reading and extracting all rate line items...":upState==="pastemode"?"Open your document, copy all text, paste below":upState==="preview"?extracted.length+" item"+(extracted.length===1?"":"s")+" found — review, edit, then confirm":"Something went wrong"}
+            </div>
+          </div>
+          {upState!=="extracting"&&<button onClick={()=>{setUpState("idle");setExtracted([]);setPasteText("");}} style={{background:"rgba(255,255,255,0.1)",border:"none",color:"white",borderRadius:4,padding:"6px 14px",cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12}}>Close</button>}
+        </div>
+
+        {upState==="extracting"&&<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,padding:40}}>
+          <div style={{width:44,height:44,border:"4px solid #f0ede6",borderTop:`4px solid ${G}`,borderRadius:"50%",animation:"spin 0.9s linear infinite"}}/>
+          <div style={{fontSize:13,color:"#888",fontFamily:"'DM Sans',sans-serif"}}>Extracting rates from your document...</div>
+        </div>}
+
+        {upState==="error"&&<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14,padding:40}}>
+          <div style={{fontSize:36}}>⚠️</div>
+          <div style={{fontSize:14,color:"#c0392b",fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}>{upErr}</div>
+          <button onClick={()=>setUpState("pastemode")} style={{padding:"9px 22px",background:M,color:"white",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:13}}>Try Paste Method Instead</button>
+        </div>}
+
+        {upState==="pastemode"&&<div style={{flex:1,padding:"22px 26px",overflowY:"auto",display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{padding:"12px 16px",background:GLA,borderRadius:6,border:`1px solid ${G}30`,fontSize:12,color:"#555",lineHeight:1.9}}>
+            <strong style={{color:M}}>How to paste from any document:</strong><br/>
+            <strong>PDF or Word:</strong> Open document → Select All (Ctrl+A) → Copy (Ctrl+C) → paste below<br/>
+            <strong>Excel:</strong> Select the rate cells → Copy (Ctrl+C) → paste below<br/>
+            <strong>Email quote:</strong> Select all quote text → Copy → paste below<br/>
+            Claude will read the text and extract all rate line items automatically.
+          </div>
+          <div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
+            <div style={LBL}>Paste your quote text here</div>
+            <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} placeholder="Paste your contractor quote text here (Ctrl+V)..." style={{...IS,resize:"none",lineHeight:1.6,fontSize:12,minHeight:220}}/>
+          </div>
+          <button onClick={()=>{if(pasteText.trim())parseRatesFromText(pasteText);}} disabled={!pasteText.trim()} style={{padding:"12px 24px",background:pasteText.trim()?M:"#ccc",color:"white",border:"none",borderRadius:4,cursor:pasteText.trim()?"pointer":"not-allowed",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:14}}>
+            Extract Rates from Text
+          </button>
+        </div>}
+
+        {upState==="preview"&&<>
+          <div style={{overflowY:"auto",flex:1}}>
+            <div style={{display:"grid",gridTemplateColumns:"36px 1.2fr 0.8fr 1.2fr 1.5fr 0.6fr 0.9fr 60px",gap:8,padding:"9px 20px",background:"#fafaf8",borderBottom:`2px solid rgba(184,150,12,0.2)`}}>
+              {["","Contractor & Date","Category","Item","Rate & Unit","","Notes",""].map((h,i)=><div key={i} style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8}}>{h}</div>)}
+            </div>
+            {extracted.map(r=><div key={r.id} style={{display:"grid",gridTemplateColumns:"36px 1.2fr 0.8fr 1.2fr 1.5fr 0.6fr 0.9fr 60px",gap:8,padding:"9px 20px",borderBottom:"1px solid #f0ede6",alignItems:"center",background:r.selected?"white":"#fafafa",opacity:r.selected?1:0.5}}>
+              <div onClick={()=>setExtracted(prev=>prev.map(x=>x.id===r.id?{...x,selected:!x.selected}:x))} style={{width:20,height:20,border:`2px solid ${r.selected?G:"#ccc"}`,borderRadius:3,background:r.selected?G:"white",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                {r.selected&&<span style={{color:"white",fontSize:12,fontWeight:700,lineHeight:1}}>✓</span>}
+              </div>
+              <div><div style={{fontSize:12,fontWeight:600,color:M}}>{r.contractor}</div><div style={{fontSize:11,color:G,marginTop:1}}>{r.date}</div></div>
+              <select value={r.category} onChange={e=>setExtracted(prev=>prev.map(x=>x.id===r.id?{...x,category:e.target.value}:x))} style={{...IS,fontSize:11,padding:"4px 6px"}}>
+                {["Demolition","Excavation","Construction Shell","Finishing Works","Plastering","Miscellaneous","Architect","Other"].map(c=><option key={c}>{c}</option>)}
+              </select>
+              <input type="text" value={r.item} onChange={e=>setExtracted(prev=>prev.map(x=>x.id===r.id?{...x,item:e.target.value}:x))} style={{...IS,fontSize:11,padding:"4px 6px"}}/>
+              <div style={{display:"flex",gap:5}}>
+                <input type="number" value={r.rate} onChange={e=>setExtracted(prev=>prev.map(x=>x.id===r.id?{...x,rate:e.target.value}:x))} style={{...IS,fontSize:12,padding:"4px 6px",width:70,fontWeight:700}}/>
+                <select value={r.unit} onChange={e=>setExtracted(prev=>prev.map(x=>x.id===r.id?{...x,unit:e.target.value}:x))} style={{...IS,fontSize:10,padding:"4px 4px",flex:1}}>
+                  {RUNITS.map(u=><option key={u}>{u}</option>)}
+                </select>
+              </div>
+              <div/>
+              <input type="text" value={r.notes} onChange={e=>setExtracted(prev=>prev.map(x=>x.id===r.id?{...x,notes:e.target.value}:x))} style={{...IS,fontSize:10,padding:"4px 6px"}}/>
+              <div/>
+            </div>)}
+          </div>
+          <div style={{padding:"14px 22px",borderTop:"1px solid #f0ede6",background:"#fafaf8",display:"flex",gap:10,alignItems:"center",flexShrink:0}}>
+            <span style={{fontSize:12,color:"#888",flex:1}}>{extracted.filter(r=>r.selected).length} of {extracted.length} selected</span>
+            <button onClick={()=>setExtracted(prev=>prev.map(r=>({...r,selected:true})))} style={{padding:"7px 14px",background:"white",border:`1px solid ${G}`,color:G,borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:12}}>Select All</button>
+            <button onClick={()=>{setUpState("idle");setExtracted([]);}} style={{padding:"7px 14px",background:"white",border:"1px solid #ddd",color:"#666",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12}}>Cancel</button>
+            <button onClick={confirmExtracted} disabled={!extracted.some(r=>r.selected)} style={{padding:"8px 22px",background:extracted.some(r=>r.selected)?M:"#ccc",color:"white",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:13}}>
+              Add {extracted.filter(r=>r.selected).length} to Library
+            </button>
+          </div>
+        </>}
+      </div>
+    </div>}
+
+    <div className="no-print" style={{background:M,padding:"0 16px",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.3)"}}>
+      <div style={{maxWidth:1150,margin:"0 auto",display:"flex",alignItems:"center",height:54,gap:4}}>
+        <div style={{marginRight:12,flexShrink:0}}>
+          <div style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:17,fontWeight:700,letterSpacing:"0.1em",lineHeight:1}}>PRESTIGE</div>
+          <div style={{color:GL,fontSize:7,letterSpacing:"0.3em",marginTop:1}}>REAL ESTATE MALTA</div>
+        </div>
+        <select value={curId} onChange={e=>setCurId(e.target.value)} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(212,175,90,0.25)",color:"white",padding:"4px 8px",borderRadius:4,fontSize:11,fontFamily:"'DM Sans',sans-serif",cursor:"pointer",maxWidth:140,marginRight:4}}>
+          {projects.map(p=><option key={p.id} value={p.id} style={{background:M}}>{p.name}</option>)}
+        </select>
+        <div style={{display:"flex",overflowX:"auto"}}>
+          {TABS.map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{padding:"7px 9px",background:"transparent",border:"none",borderBottom:tab===k?`2px solid ${G}`:"2px solid transparent",color:tab===k?GL:"rgba(255,255,255,0.5)",fontSize:10,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,height:54,whiteSpace:"nowrap"}}>{l}</button>)}
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+          {saving&&<span style={{fontSize:9,color:"rgba(212,175,90,0.4)"}}>Saving...</span>}
+          <button onClick={handleSave} style={{padding:"5px 13px",background:G,color:"white",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:11}}>Save</button>
+          <button onClick={handleNew} style={{padding:"5px 13px",background:"transparent",color:GL,border:`1px solid rgba(212,175,90,0.4)`,borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:11}}>+ New</button>
+          <button onClick={()=>window.print()} style={{padding:"5px 11px",background:"transparent",border:`1px solid rgba(212,175,90,0.3)`,color:GL,borderRadius:4,fontSize:11,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>Print</button>
+          <button onClick={()=>setResetConfirm(true)} style={{padding:"5px 9px",background:"transparent",border:"1px solid rgba(255,255,255,0.12)",color:"rgba(255,255,255,0.35)",borderRadius:4,fontSize:11,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div style={{maxWidth:1150,margin:"0 auto",padding:"22px 14px"}}>
+
+    {tab==="calc"&&<>
+      <div style={CARD} className="card-print">
+        <SH num="--" title="Site Details"/>
+        <div style={{padding:"14px 18px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <div><div style={LBL}>Project Name</div><TI value={cur.name} onChange={v=>upd(p=>({...p,name:v}))} placeholder="e.g. Santa Venera Development"/></div>
+          <div><div style={LBL}>Project Address</div><TI value={cur.site.address} onChange={v=>setSite("address",v)} placeholder="e.g. Triq Misrah il-Barrieri, Santa Venera"/></div>
+          <div><div style={LBL}>Date</div><input type="date" value={cur.site.date} onChange={e=>setSite("date",e.target.value)} style={IS}/></div>
+          <div><div style={LBL}>Land Purchase Price</div><NI value={cur.site.purchasePrice} onChange={v=>setSite("purchasePrice",v)} placeholder="€" style={GIS}/></div>
+          <div><div style={LBL}>Site Footprint (m²)</div><NI value={cur.site.footprint} onChange={v=>setSite("footprint",v)} placeholder="e.g. 400"/></div>
+          <div><div style={LBL}>Excavation Depth (metres)</div><NI value={cur.site.depth} onChange={v=>setSite("depth",v)} placeholder="e.g. 3.5"/></div>
+        </div>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="01" title="Demolition Works"/>
+        <div style={{padding:"13px 18px"}}><div style={LBL}>Lump Sum</div><NI value={cur.demo} onChange={v=>set("demo",v)} placeholder="€"/></div>
+        <CustomRows rows={cur.demoCustom||[]} onChange={v=>set("demoCustom",v)} hasMode={false} fp={fp}/>
+        <NoteField value={cur.notes.s1} onChange={v=>setNote("s1",v)}/>
+        <TR label="Demolition Total" value={C.s1} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="02" title="Excavation Works" subtitle="Auto-calculated: footprint × depth → cubic yards (×1.30795) × rate"/>
+        <div style={{padding:"13px 18px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+            <div><div style={LBL}>Volume (m³) — auto</div><div style={{...DIS,padding:"8px 12px",borderRadius:4}}>{C.m3.toFixed(3)} m³</div></div>
+            <div><div style={LBL}>Volume (cubic yards) — auto</div><div style={{...DIS,padding:"8px 12px",borderRadius:4}}>{C.yds.toFixed(3)} yd³</div></div>
+            <div><div style={LBL}>Rate per Cubic Yard</div><NI value={cur.excavRate} onChange={v=>set("excavRate",v)} placeholder="€ e.g. 30"/></div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+            <Tog on={cur.excavManual} onChange={v=>set("excavManual",v)} labels={["Manual Override","Auto-Calculate"]}/>
+            <span style={{fontSize:12,color:"#999"}}>Auto: {fmt(C.exAuto)}</span>
+            {cur.excavManual&&<div style={{flex:1,minWidth:160}}><NI value={cur.excavOverride} onChange={v=>set("excavOverride",v)} placeholder="€ Override total"/></div>}
+          </div>
+        </div>
+        <CustomRows rows={cur.excavCustom||[]} onChange={v=>set("excavCustom",v)} hasMode={false} fp={fp}/>
+        <NoteField value={cur.notes.s2} onChange={v=>setNote("s2",v)}/>
+        <TR label="Excavation Total" value={C.s2} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="03" title="Construction Works" subtitle="Shell form — rate per m² per floor level"/>
+        <div style={{padding:"9px 18px 4px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:9,paddingBottom:7,borderBottom:`2px solid rgba(184,150,12,0.2)`}}>
+            <ColH>Floor Level</ColH><ColH>Area (m²)</ColH><ColH>Rate (€/m²)</ColH><ColH>Subtotal</ColH>
+          </div>
+          {FK.map(k=>{const sub=n(cur.floors[k].sqm)*n(cur.floors[k].rate);return(
+            <div key={k} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:9,padding:"7px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center"}}>
+              <div style={{fontSize:13,fontWeight:600,color:M}}>{FL[k]}</div>
+              <NI value={cur.floors[k].sqm} onChange={v=>setFloor(k,"sqm",v)} placeholder="m²"/>
+              <NI value={cur.floors[k].rate} onChange={v=>setFloor(k,"rate",v)} placeholder="€/m²"/>
+              <div style={{fontSize:13,fontWeight:600,color:sub>0?M:"#ddd",textAlign:"right"}}>{fmt(sub)}</div>
+            </div>
+          );})}
+          <div style={{padding:"9px 0",borderBottom:"1px solid #f5f2ec"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+              <span style={{fontSize:13,fontWeight:600,color:M,flex:1}}>Common Areas / Lift / Stairs</span>
+              <button onClick={()=>upd(p=>({...p,common:{...p.common,mode:p.common.mode==="sqm"?"lump":"sqm"}}))} style={{fontSize:10,padding:"3px 9px",borderRadius:20,border:`1px solid ${G}`,background:"white",color:G,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>{cur.common.mode==="sqm"?"→ Lump Sum":"→ Rate/m²"}</button>
+            </div>
+            {cur.common.mode==="sqm"?(
+              <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:9,alignItems:"center"}}>
+                <div style={{fontSize:11,color:"#aaa"}}>Rate per m²</div>
+                <NI value={cur.common.sqm} onChange={v=>upd(p=>({...p,common:{...p.common,sqm:v}}))} placeholder="m²"/>
+                <NI value={cur.common.rate} onChange={v=>upd(p=>({...p,common:{...p.common,rate:v}}))} placeholder="€/m²"/>
+                <div style={{fontSize:13,fontWeight:600,color:C.ct>0?M:"#ddd",textAlign:"right"}}>{fmt(C.ct)}</div>
+              </div>
+            ):(
+              <div style={{display:"grid",gridTemplateColumns:"2fr 2fr 1fr",gap:9,alignItems:"center"}}>
+                <div style={{fontSize:11,color:"#aaa"}}>Lump Sum</div>
+                <NI value={cur.common.lump} onChange={v=>upd(p=>({...p,common:{...p.common,lump:v}}))} placeholder="€"/>
+                <div style={{fontSize:13,fontWeight:600,color:C.ct>0?M:"#ddd",textAlign:"right"}}>{fmt(C.ct)}</div>
+              </div>
+            )}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 2fr 1fr",gap:9,padding:"7px 0",alignItems:"center"}}>
+            <div style={{fontSize:13,fontWeight:600,color:M}}>Backyard & Front Garden</div>
+            <NI value={cur.backyard} onChange={v=>set("backyard",v)} placeholder="€ lump sum"/>
+            <div style={{fontSize:13,fontWeight:600,color:n(cur.backyard)>0?M:"#ddd",textAlign:"right"}}>{fmt(cur.backyard)}</div>
+          </div>
+        </div>
+        <CustomRows rows={cur.s3Custom||[]} onChange={v=>set("s3Custom",v)} hasMode={false} fp={fp}/>
+        <NoteField value={cur.notes.s3} onChange={v=>setNote("s3",v)}/>
+        <TR label="Construction Works Total" value={C.s3} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="07" title="Architect Fees" subtitle="Auto-calculated as 2% of Construction Works (Section 3)"/>
+        <div style={{padding:"13px 18px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <Tog on={cur.archOn} onChange={v=>set("archOn",v)} labels={["Included","Excluded"]}/>
+            {cur.archOn&&<><span style={{fontSize:12,color:"#999"}}>2% of {fmt(C.s3)} = <strong style={{color:M}}>{fmt(C.aAuto)}</strong></span>
+            <Tog on={cur.archManual} onChange={v=>set("archManual",v)} labels={["Manual Override","Auto (2%)"]}/>
+            {cur.archManual&&<div style={{flex:1,minWidth:150}}><NI value={cur.archOverride} onChange={v=>set("archOverride",v)} placeholder="€ Override"/></div>}</>}
+          </div>
+        </div>
+        <NoteField value={cur.notes.s7} onChange={v=>setNote("s7",v)}/>
+        <TR label="Architect Fees Total" value={C.aT} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="04" title="Finishing Works" subtitle="Toggle on/off — lump sum or rate per gross plot m²"/>
+        <div style={{padding:"9px 18px 4px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 50px 65px 1fr 1fr",gap:7,paddingBottom:7,borderBottom:`2px solid rgba(184,150,12,0.2)`}}>
+            <ColH>Item</ColH><ColH>On</ColH><ColH>Mode</ColH><ColH>Value/Rate</ColH><ColH>Total</ColH>
+          </div>
+          {FINK.map(k=>{const v=cur.fin[k],tot=v.on?(v.mode==="lump"?n(v.value):n(v.rate)*fp):0;return(
+            <div key={k} style={{display:"grid",gridTemplateColumns:"2fr 50px 65px 1fr 1fr",gap:7,padding:"6px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center",opacity:v.on?1:0.42}}>
+              <div style={{fontSize:13,color:M,fontWeight:500}}>{k}</div>
+              <Tog on={v.on} onChange={val=>setFin(k,"on",val)}/>
+              <button onClick={()=>setFin(k,"mode",v.mode==="lump"?"sqm":"lump")} disabled={!v.on} style={{fontSize:10,padding:"3px 7px",borderRadius:20,border:`1px solid ${G}`,background:"white",color:G,cursor:"pointer",opacity:v.on?1:0.35}}>{v.mode==="lump"?"Lump":"€/m²"}</button>
+              {v.mode==="lump"?<NI value={v.value} onChange={val=>setFin(k,"value",val)} disabled={!v.on} placeholder="€"/>:<NI value={v.rate} onChange={val=>setFin(k,"rate",val)} disabled={!v.on} placeholder="€/m²"/>}
+              <div style={{fontSize:13,fontWeight:600,color:v.on&&tot>0?M:"#ddd",textAlign:"right"}}>{fmt(tot)}</div>
+            </div>
+          );})}
+        </div>
+        <CustomRows rows={cur.finCustom||[]} onChange={v=>set("finCustom",v)} hasMode={true} fp={fp}/>
+        <NoteField value={cur.notes.s4} onChange={v=>setNote("s4",v)}/>
+        <TR label="Finishing Works Total" value={C.s4} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="05" title="Miscellaneous Items"/>
+        <div style={{padding:"9px 18px 4px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,paddingBottom:7,borderBottom:`2px solid rgba(184,150,12,0.2)`}}><ColH>Item</ColH><ColH>On</ColH><ColH>Amount</ColH><ColH>Total</ColH></div>
+          {MISCK.map(k=><div key={k} style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,padding:"6px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center",opacity:cur.misc[k].on?1:0.42}}>
+            <div style={{fontSize:13,color:M,fontWeight:500}}>{k}</div>
+            <Tog on={cur.misc[k].on} onChange={v=>setMisc(k,"on",v)}/>
+            <NI value={cur.misc[k].value} onChange={v=>setMisc(k,"value",v)} disabled={!cur.misc[k].on} placeholder="€"/>
+            <div style={{fontSize:13,fontWeight:600,color:cur.misc[k].on&&n(cur.misc[k].value)>0?M:"#ddd",textAlign:"right"}}>{fmt(cur.misc[k].on?cur.misc[k].value:0)}</div>
+          </div>)}
+        </div>
+        <CustomRows rows={cur.miscCustom||[]} onChange={v=>set("miscCustom",v)} hasMode={false} fp={fp}/>
+        <NoteField value={cur.notes.s5} onChange={v=>setNote("s5",v)}/>
+        <TR label="Miscellaneous Total" value={C.s5} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="06" title="Extraordinary Items"/>
+        <div style={{padding:"9px 18px 4px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,paddingBottom:7,borderBottom:`2px solid rgba(184,150,12,0.2)`}}><ColH>Item</ColH><ColH>On</ColH><ColH>Amount</ColH><ColH>Total</ColH></div>
+          {EXK.map(k=><div key={k} style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,padding:"6px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center",opacity:cur.ex[k].on?1:0.42}}>
+            <div style={{fontSize:13,color:M,fontWeight:500}}>{k}</div>
+            <Tog on={cur.ex[k].on} onChange={v=>setEx(k,"on",v)}/>
+            <NI value={cur.ex[k].value} onChange={v=>setEx(k,"value",v)} disabled={!cur.ex[k].on} placeholder="€"/>
+            <div style={{fontSize:13,fontWeight:600,color:cur.ex[k].on&&n(cur.ex[k].value)>0?M:"#ddd",textAlign:"right"}}>{fmt(cur.ex[k].on?cur.ex[k].value:0)}</div>
+          </div>)}
+        </div>
+        <CustomRows rows={cur.exCustom||[]} onChange={v=>set("exCustom",v)} hasMode={false} fp={fp}/>
+        <NoteField value={cur.notes.s6} onChange={v=>setNote("s6",v)}/>
+        <TR label="Extraordinary Items Total" value={C.s6} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="08" title="Other Expenses" subtitle="Land carried from Site Details — excluded from VAT"/>
+        <div style={{padding:"9px 18px 4px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,paddingBottom:7,borderBottom:`2px solid rgba(184,150,12,0.2)`}}><ColH>Item</ColH><ColH>On</ColH><ColH>Amount</ColH><ColH>Total</ColH></div>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,padding:"6px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center",background:`${GLA}44`}}>
+            <div style={{fontSize:13,color:M,fontWeight:600}}>Land Purchase Price</div>
+            <div style={{fontSize:9,color:G,padding:"2px 7px",border:`1px solid ${G}`,borderRadius:20,textAlign:"center",fontWeight:600,width:"fit-content"}}>AUTO</div>
+            <div style={{...DIS,padding:"8px 12px",borderRadius:4}}>{fmt(cur.site.purchasePrice)}</div>
+            <div style={{fontSize:13,fontWeight:700,color:M,textAlign:"right"}}>{fmt(cur.site.purchasePrice)}</div>
+          </div>
+          {OTHK.map(k=><div key={k} style={{display:"grid",gridTemplateColumns:"2fr 50px 1fr 1fr",gap:7,padding:"6px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center",opacity:cur.other[k].on?1:0.42}}>
+            <div style={{fontSize:13,color:M,fontWeight:500}}>{k}</div>
+            <Tog on={cur.other[k].on} onChange={v=>setOther(k,"on",v)}/>
+            <NI value={cur.other[k].value} onChange={v=>setOther(k,"value",v)} disabled={!cur.other[k].on} placeholder="€"/>
+            <div style={{fontSize:13,fontWeight:600,color:cur.other[k].on&&n(cur.other[k].value)>0?M:"#ddd",textAlign:"right"}}>{fmt(cur.other[k].on?cur.other[k].value:0)}</div>
+          </div>)}
+        </div>
+        <CustomRows rows={cur.otherCustom||[]} onChange={v=>set("otherCustom",v)} hasMode={false} fp={fp}/>
+        <NoteField value={cur.notes.s8} onChange={v=>setNote("s8",v)}/>
+        <TR label="Other Expenses Total (excl. VAT)" value={C.s8} highlight/>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="Σ" title="Project Cost Summary"/>
+        {[["01 Demolition",C.s1],["02 Excavation",C.s2],["03 Construction",C.s3],["04 Finishing",C.s4],["05 Miscellaneous",C.s5],["06 Extraordinary",C.s6],["07 Architect Fees",C.aT]].map(([l,v])=><TR key={l} label={l} value={v}/>)}
+        <div style={{padding:"10px 18px",background:"#fafafa",display:"flex",alignItems:"center",gap:10,borderTop:"1px solid #f0ede6"}}>
+          <div style={{flex:1,fontSize:13,color:"#555",fontWeight:500}}>10% Contingency <span style={{fontSize:11,color:"#aaa"}}>(Sections 3+4)</span></div>
+          <Tog on={cur.contingOn} onChange={v=>set("contingOn",v)}/><div style={{fontWeight:600,color:cur.contingOn?M:"#ccc",fontSize:13,width:120,textAlign:"right"}}>{fmt(C.cont)}</div>
+        </div>
+        <div style={{padding:"10px 18px",background:"#fafafa",display:"flex",alignItems:"center",gap:10,borderTop:"1px solid #f0ede6"}}>
+          <div style={{flex:1,fontSize:13,color:"#555",fontWeight:500}}>18% VAT <span style={{fontSize:11,color:"#aaa"}}>(excl. Section 8)</span></div>
+          <Tog on={cur.vatOn} onChange={v=>set("vatOn",v)}/><div style={{fontWeight:600,color:cur.vatOn?M:"#ccc",fontSize:13,width:120,textAlign:"right"}}>{fmt(C.vat)}</div>
+        </div>
+        <div style={{padding:"12px 18px",background:GLA,display:"flex",justifyContent:"space-between",borderTop:`2px solid ${G}30`}}>
+          <span style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:14}}>Construction Cost (incl. VAT)</span>
+          <span style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:15,fontWeight:700}}>{fmt(C.cc)}</span>
+        </div>
+        <TR label="08 Other Expenses (excl. VAT)" value={C.s8}/>
+        <div style={{padding:"13px 18px",background:M,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:17,fontWeight:600}}>Total Project Investment</div>
+          <div style={{fontFamily:"'Playfair Display',serif",color:GL,fontSize:21,fontWeight:700}}>{fmt(C.gt)}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)"}}>
+          <KPI label="Cost per m²" value={fmt(C.cpsm)}/><KPI label="Total Built Area" value={C.tba.toFixed(0)+" m²"}/><KPI label="Break-even / Unit" value={fmt(C.beu)}/>
+        </div>
+      </div>
+
+      <div style={CARD} className="card-print">
+        <SH num="€" title="Sales & Profitability" subtitle="Agency fees 5% + 18% VAT · Vendor tax 8%"/>
+        <div style={{padding:"14px 18px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16,padding:"13px",background:"#fafaf8",borderRadius:6,border:"1px solid #f0ede6"}}>
+            <div>
+              <div style={LBL}>Total Units in Block</div>
+              <NI value={cur.totalUnitsTarget||""} onChange={v=>set("totalUnitsTarget",v)} placeholder="e.g. 10"/>
+              <div style={{fontSize:11,color:"#aaa",marginTop:3}}>Used for suggested price per unit</div>
+            </div>
+            <div>
+              <div style={LBL}>Target Net Margin %</div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input type="range" min="0" max="50" step="0.5" value={n(cur.targetMargin)} onChange={e=>set("targetMargin",e.target.value)} style={{flex:1}}/>
+                <NI value={cur.targetMargin} onChange={v=>set("targetMargin",v)} placeholder="20" style={{...IS,width:56,textAlign:"center"}}/>
+                <span style={{fontSize:11,color:"#999"}}>%</span>
+              </div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:"#aaa",marginBottom:2}}>Required Revenue</div>
+              <div style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:19,fontWeight:700}}>{fmt(C.sr)}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:"#aaa",marginBottom:2}}>Suggested Price / Unit {(C.tgt>0?C.tgt:C.tu)>0?"("+(C.tgt>0?C.tgt:C.tu)+" units)":""}</div>
+              <div style={{fontFamily:"'Playfair Display',serif",color:G,fontSize:19,fontWeight:700}}>{fmt(C.spu)}</div>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 22px",gap:7,marginBottom:5}}>
+            <ColH>Unit Type</ColH><ColH>Units</ColH><ColH>Price / Unit</ColH><ColH>Total</ColH><div/>
+          </div>
+          {cur.units.map(u=>{const ut=n(u.qty)*n(u.price);return(
+            <div key={u.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 22px",gap:7,marginBottom:6,alignItems:"center"}}>
+              <TI value={u.name} onChange={v=>setUnit(u.id,"name",v)} placeholder="e.g. 2-Bed Apartment"/>
+              <NI value={u.qty} onChange={v=>setUnit(u.id,"qty",v)} placeholder="0"/>
+              <NI value={u.price} onChange={v=>setUnit(u.id,"price",v)} placeholder="€"/>
+              <div style={{fontSize:13,fontWeight:700,color:ut>0?M:"#ddd"}}>{fmt(ut)}</div>
+              <button onClick={()=>rmUnit(u.id)} disabled={cur.units.length===1} style={{background:"none",border:"none",color:"#ccc",cursor:"pointer",fontSize:16,padding:0,opacity:cur.units.length===1?0.2:1}}>×</button>
+            </div>
+          );})}
+          <button onClick={addUnit} style={{marginTop:4,padding:"6px 14px",background:"white",border:`1px solid ${G}`,color:G,borderRadius:4,cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>+ Add Unit Type</button>
+        </div>
+        <TR label={"Gross Revenue ("+C.tu+" units)"} value={C.gr} highlight large/>
+        <TR label="Agency Fees (5%)" value={C.af}/>
+        <TR label="VAT on Agency Fees (18%)" value={C.av} muted/>
+        <TR label="Vendor Tax (8%)" value={C.vt}/>
+        <TR label="Total Project Investment" value={C.gt}/>
+        <div style={{padding:"12px 18px",background:GLA,display:"flex",justifyContent:"space-between",borderTop:`2px solid ${G}30`}}>
+          <span style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:14}}>Net Profit</span>
+          <span style={{fontFamily:"'Playfair Display',serif",color:C.np>=0?G:"#c0392b",fontSize:16,fontWeight:700}}>{fmt(C.np)}</span>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)"}}>
+          <KPI label="Net Margin" value={<span style={{color:C.nm>=0?M:"#c0392b"}}>{pct(C.nm)}</span>}/>
+          <KPI label="ROI" value={<span style={{color:C.roi>=0?M:"#c0392b"}}>{pct(C.roi)}</span>}/>
+          <KPI label="Break-even / Unit" value={fmt(C.beu)}/>
+        </div>
+        <div style={{padding:"14px 18px",background:M,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><div style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:16,fontWeight:600}}>Net Profit</div><div style={{color:"rgba(255,255,255,0.35)",fontSize:11,marginTop:1}}>After all costs, fees & taxes</div></div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontFamily:"'Playfair Display',serif",color:C.np>=0?GL:"#e74c3c",fontSize:22,fontWeight:700}}>{fmt(C.np)}</div>
+            <div style={{color:C.nm>=0?"rgba(212,175,90,0.6)":"#e74c3c",fontSize:11,marginTop:1}}>{pct(C.nm)} net margin</div>
+          </div>
+        </div>
+      </div>
+      <div style={{textAlign:"center",padding:"10px 0 28px",color:"#bbb",fontSize:10,letterSpacing:"0.05em"}}>PRESTIGE PROPERTY INVESTMENT LTD · C-98384 · CONFIDENTIAL · {cur.site.date} · Saved {cur.lastEdited}</div>
+    </>}
+
+    {tab==="summary"&&<div style={CARD}>
+      <SH num="Sum" title={cur.name+" — Executive Summary"} subtitle={cur.site.address+" · "+cur.site.date}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr"}}>
+        {[["Total Investment",fmt(C.gt)],["Gross Revenue",fmt(C.gr)],["Net Profit",fmt(C.np)],["Net Margin",pct(C.nm)],["ROI",pct(C.roi)],["Break-even / Unit",fmt(C.beu)],["Cost per m²",fmt(C.cpsm)],["Total Built Area",C.tba.toFixed(0)+" m²"],["Agency Fees (total)",fmt(C.af+C.av)],["Vendor Tax",fmt(C.vt)]].map(([l,v],i)=>(
+          <div key={l} style={{padding:"13px 22px",borderBottom:"1px solid #f0ede6",borderRight:i%2===0?"1px solid #f0ede6":"none"}}>
+            <div style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+            <div style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:19,fontWeight:700}}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{padding:"14px 18px",borderTop:"1px solid #f0ede6"}}>
+        <div style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Cost Breakdown</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7}}>
+          {[["Demolition",C.s1],["Excavation",C.s2],["Construction",C.s3],["Finishing",C.s4],["Miscellaneous",C.s5],["Extraordinary",C.s6],["Architect",C.aT],["Other",C.s8]].map(([l,v])=>(
+            <div key={l} style={{background:"#fafafa",padding:"10px 13px",borderRadius:5,border:"1px solid #f0ede6"}}>
+              <div style={{fontSize:11,color:"#999",marginBottom:3}}>{l}</div>
+              <div style={{fontSize:13,fontWeight:700,color:M}}>{fmt(v)}</div>
+              <div style={{fontSize:10,color:"#bbb",marginTop:1}}>{C.gt>0?((v/C.gt)*100).toFixed(1):0}%</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{padding:"13px 18px",background:M,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:14}}>Total Project Investment</span>
+        <span style={{fontFamily:"'Playfair Display',serif",color:GL,fontSize:19,fontWeight:700}}>{fmt(C.gt)}</span>
+      </div>
+    </div>}
+
+    {tab==="sensitivity"&&<div style={CARD}>
+      <SH num="+/-" title="Sensitivity Analysis" subtitle="Net profit impact at different sale price adjustments"/>
+      <div style={{padding:18}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"'DM Sans',sans-serif"}}>
+          <thead><tr style={{borderBottom:`2px solid rgba(184,150,12,0.2)`}}>{["Price Change","Gross Revenue","Net Profit","Net Margin","Status"].map(h=><th key={h} style={{padding:"9px 14px",textAlign:"left",fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1}}>{h}</th>)}</tr></thead>
+          <tbody>{C.sens.map(r=><tr key={r.dp} style={{borderBottom:"1px solid #f0ede6",background:r.dp===0?GLA:"white"}}>
+            <td style={{padding:"10px 14px",fontSize:13,fontWeight:700,color:r.dp<0?"#c0392b":r.dp>0?"#27ae60":M}}>{r.dp===0?"Current (base)":r.dp>0?"+"+r.dp+"%":r.dp+"%"}</td>
+            <td style={{padding:"10px 14px",fontSize:13,color:"#555"}}>{fmt(r.rev)}</td>
+            <td style={{padding:"10px 14px",fontSize:13,fontWeight:600,color:r.profit>=0?G:"#c0392b"}}>{fmt(r.profit)}</td>
+            <td style={{padding:"10px 14px",fontSize:13,color:r.margin>=0?"#555":"#c0392b"}}>{pct(r.margin)}</td>
+            <td style={{padding:"10px 14px"}}><span style={{fontSize:11,padding:"3px 9px",borderRadius:20,background:r.profit>=0?"#e8f5e9":"#fdecea",color:r.profit>=0?"#27ae60":"#c0392b",fontWeight:600}}>{r.profit>=0?"Profitable":"Loss"}</span></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </div>}
+
+    {tab==="compare"&&<div style={CARD}>
+      <SH num="vs" title="Project Comparison"/>
+      <div style={{padding:"13px 18px",display:"flex",alignItems:"center",gap:10,borderBottom:"1px solid #f0ede6"}}>
+        <div style={{fontSize:13,fontWeight:600,color:M,flexShrink:0}}>{cur.name}</div>
+        <div style={{fontSize:12,color:"#aaa"}}>vs.</div>
+        <select value={cmpId||""} onChange={e=>setCmpId(e.target.value||null)} style={{...IS,maxWidth:240}}>
+          <option value="">— Select project to compare —</option>
+          {projects.filter(p=>p.id!==curId).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </div>
+      {!CMPC&&<div style={{padding:"28px 18px",textAlign:"center",color:"#bbb",fontSize:13}}>Select a second project above to compare</div>}
+      {CMPC&&<>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",background:"#fafafa",borderBottom:`2px solid rgba(184,150,12,0.2)`}}>
+          <div style={{padding:"9px 18px",fontSize:10,color:"#aaa",fontWeight:600,textTransform:"uppercase",letterSpacing:1}}>Metric</div>
+          <div style={{padding:"9px 18px",fontSize:12,fontWeight:700,color:M,borderLeft:"1px solid #f0ede6",background:GLA}}>{cur.name}</div>
+          <div style={{padding:"9px 18px",fontSize:12,fontWeight:700,color:M,borderLeft:"1px solid #f0ede6"}}>{cmp.name}</div>
+        </div>
+        {[["Total Investment",fmt(C.gt),fmt(CMPC.gt)],["Gross Revenue",fmt(C.gr),fmt(CMPC.gr)],["Net Profit",fmt(C.np),fmt(CMPC.np)],["Net Margin",pct(C.nm),pct(CMPC.nm)],["ROI",pct(C.roi),pct(CMPC.roi)],["Cost per m²",fmt(C.cpsm),fmt(CMPC.cpsm)],["Break-even/Unit",fmt(C.beu),fmt(CMPC.beu)],["Construction S3",fmt(C.s3),fmt(CMPC.s3)],["Finishing S4",fmt(C.s4),fmt(CMPC.s4)]].map(([l,a,b],i)=>(
+          <div key={l} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",borderTop:"1px solid #f0ede6",background:i%2?"#fafafa":"white"}}>
+            <div style={{padding:"9px 18px",fontSize:12,color:"#666"}}>{l}</div>
+            <div style={{padding:"9px 18px",fontSize:13,fontWeight:600,color:M,borderLeft:"1px solid #f0ede6",background:GLA+"55"}}>{a}</div>
+            <div style={{padding:"9px 18px",fontSize:13,fontWeight:600,color:M,borderLeft:"1px solid #f0ede6"}}>{b}</div>
+          </div>
+        ))}
+      </>}
+    </div>}
+
+    {tab==="ratelib"&&<div style={CARD}>
+      <SH num="RL" title="Rate Library" subtitle="Permanent database of contractor quotes & market rates — with dates"/>
+      <div style={{padding:"14px 18px",background:"#fafaf8",borderBottom:"1px solid #f0ede6"}}>
+        <div style={{fontSize:13,color:"#666",marginBottom:12,lineHeight:1.7}}>Add rates from any contractor quote. Mark rates as <strong>Active</strong> to load them into any project. Always record the date.</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:9,marginBottom:9}}>
+          <div><div style={LBL}>Contractor / Source</div><TI value={newRate.contractor} onChange={v=>setNewRate(r=>({...r,contractor:v}))} placeholder="e.g. Faceworks Ltd"/></div>
+          <div><div style={LBL}>Date of Quote</div><input type="date" value={newRate.date} onChange={e=>setNewRate(r=>({...r,date:e.target.value}))} style={IS}/></div>
+          <div><div style={LBL}>Category</div><select value={newRate.category} onChange={e=>setNewRate(r=>({...r,category:e.target.value}))} style={IS}>{RCATS.filter(c=>c!=="All").map(c=><option key={c}>{c}</option>)}</select></div>
+          <div><div style={LBL}>Item Description</div><TI value={newRate.item} onChange={v=>setNewRate(r=>({...r,item:v}))} placeholder="e.g. Basement shell construction"/></div>
+          <div><div style={LBL}>Rate</div><NI value={newRate.rate} onChange={v=>setNewRate(r=>({...r,rate:v}))} placeholder="e.g. 850"/></div>
+          <div><div style={LBL}>Unit</div><select value={newRate.unit} onChange={e=>setNewRate(r=>({...r,unit:e.target.value}))} style={IS}>{RUNITS.map(u=><option key={u}>{u}</option>)}</select></div>
+          <div><div style={LBL}>Notes</div><TI value={newRate.notes} onChange={v=>setNewRate(r=>({...r,notes:v}))} placeholder="Quote ref, VAT status..."/></div>
+          <div style={{display:"flex",alignItems:"flex-end"}}>
+            <button onClick={addRateEntry} style={{width:"100%",padding:"8px 14px",background:M,color:"white",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:13}}>+ Add Rate</button>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <label style={{padding:"7px 16px",background:GLA,border:`1px solid ${G}`,color:G,borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:12,display:"flex",alignItems:"center",gap:6}}>
+            📎 Upload Quote (PDF / Excel / Word)
+            <input type="file" accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.txt" onChange={e=>{if(e.target.files[0])handleUpload(e.target.files[0]);e.target.value="";}} style={{display:"none"}}/>
+          </label>
+          <button onClick={()=>setUpState("pastemode")} style={{padding:"7px 16px",background:"white",border:`1px solid ${G}`,color:G,borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:12}}>📋 Paste Quote Text</button>
+        </div>
+      </div>
+      <div style={{padding:"10px 18px",display:"flex",alignItems:"center",gap:6,borderBottom:"1px solid #f0ede6",flexWrap:"wrap"}}>
+        <span style={{fontSize:12,color:"#666",fontWeight:500}}>Filter:</span>
+        {RCATS.map(c=><button key={c} onClick={()=>setRlFilter(c)} style={{padding:"3px 10px",borderRadius:20,border:`1px solid ${rlFilter===c?M:"#ddd"}`,background:rlFilter===c?M:"white",color:rlFilter===c?"white":"#666",fontSize:11,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>{c}</button>)}
+        <div style={{marginLeft:"auto"}}>
+          <button onClick={()=>{const active=rateLib.filter(r=>r.active);if(!active.length){showToast("No active rates");return;}upd(p=>{const np={...p};active.forEach(r=>{if(r.category==="Excavation"&&r.unit==="€/yd³")np.excavRate=r.rate;FK.forEach(k=>{if(r.category==="Construction Shell"&&r.item.toLowerCase().includes(FL[k].toLowerCase().split(" ")[0].toLowerCase()))np.floors={...np.floors,[k]:{...np.floors[k],rate:r.rate}};});});return np;});showToast("Active rates loaded");}} style={{padding:"5px 13px",background:G,color:"white",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:11}}>Load Active into Project</button>
+        </div>
+      </div>
+      {rlShow.length===0&&<div style={{padding:"28px 18px",textAlign:"center",color:"#bbb",fontSize:13}}>No rate entries yet. Add manually above or upload a quote.</div>}
+      {rlShow.length>0&&<>
+        <div style={{display:"grid",gridTemplateColumns:"55px 1.2fr 0.8fr 1fr 1.5fr 1fr 80px",gap:7,padding:"7px 18px",borderBottom:`2px solid rgba(184,150,12,0.2)`}}>
+          {["Active","Contractor","Date","Category","Item","Rate",""].map((h,i)=><div key={i} style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8}}>{h}</div>)}
+        </div>
+        {rlShow.map(r=><div key={r.id} style={{display:"grid",gridTemplateColumns:"55px 1.2fr 0.8fr 1fr 1.5fr 1fr 80px",gap:7,padding:"8px 18px",borderBottom:"1px solid #f0ede6",alignItems:"center",background:r.active?GLA+"55":"white"}}>
+          <Tog on={r.active} onChange={()=>setRateLib(prev=>prev.map(x=>x.id===r.id?{...x,active:!x.active}:x))} labels={["Active","Set"]}/>
+          <div><div style={{fontSize:12,fontWeight:600,color:M}}>{r.contractor}</div><div style={{fontSize:10,color:"#bbb",marginTop:1}}>{r.notes}</div></div>
+          <div style={{fontSize:11,color:G,fontWeight:600}}>{r.date}</div>
+          <div style={{fontSize:11,color:"#888"}}>{r.category}</div>
+          <div style={{fontSize:12,color:"#555"}}>{r.item}</div>
+          <div style={{fontSize:13,fontWeight:700,color:M}}>€{r.rate}<span style={{fontSize:10,color:"#aaa",fontWeight:400}}> {r.unit}</span></div>
+          <button onClick={()=>setRateLib(prev=>prev.filter(x=>x.id!==r.id))} style={{background:"none",border:"1px solid #f0ede6",borderRadius:4,color:"#ccc",cursor:"pointer",fontSize:11,padding:"3px 7px",fontFamily:"'DM Sans',sans-serif"}}>Remove</button>
+        </div>)}
+      </>}
+      <div style={{padding:"10px 18px",background:"#fafaf8",borderTop:"1px solid #f0ede6",fontSize:11,color:"#aaa"}}>{rateLib.length} rate entr{rateLib.length===1?"y":"ies"} · {rateLib.filter(r=>r.active).length} active</div>
+    </div>}
+
+    {tab==="landfeas"&&<div style={CARD} className="card-print">
+      <SH num="LF" title="Land Feasibility" subtitle="For agents — quick viability assessment of a land opportunity"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:0}}>
+        <div style={{padding:"18px",borderRight:"1px solid #f0ede6"}}>
+          <div style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>Land Details</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div style={{gridColumn:"1/-1"}}><div style={LBL}>Property Address</div><TI value={lf.address} onChange={v=>setLf(p=>({...p,address:v}))} placeholder="e.g. Triq ir-Ramija, Siggiewi"/></div>
+            <div><div style={LBL}>Agent Name</div><TI value={lf.agentName} onChange={v=>setLf(p=>({...p,agentName:v}))} placeholder="Your name"/></div>
+            <div><div style={LBL}>Date</div><input type="date" value={lf.date} onChange={e=>setLf(p=>({...p,date:e.target.value}))} style={IS}/></div>
+            <div><div style={LBL}>Asking Land Price</div><NI value={lf.landPrice} onChange={v=>setLf(p=>({...p,landPrice:v}))} placeholder="€" style={GIS}/></div>
+            <div><div style={LBL}>Site Footprint (m²)</div><NI value={lf.footprint} onChange={v=>setLf(p=>({...p,footprint:v}))} placeholder="m²"/></div>
+            <div><div style={LBL}>Floors Permitted</div><NI value={lf.floors} onChange={v=>setLf(p=>({...p,floors:v}))} placeholder="e.g. 4"/></div>
+            <div><div style={LBL}>Built Area per Floor (m²)</div><NI value={lf.builtArea} onChange={v=>setLf(p=>({...p,builtArea:v}))} placeholder="m²"/></div>
+            <div><div style={LBL}>No. of Units</div><NI value={lf.units} onChange={v=>setLf(p=>({...p,units:v}))} placeholder="e.g. 8"/></div>
+            <div><div style={LBL}>Construction Cost (€/m²)</div><NI value={lf.constCostSqm} onChange={v=>setLf(p=>({...p,constCostSqm:v}))} placeholder="€/m²"/></div>
+            <div><div style={LBL}>Target Developer Margin %</div><NI value={lf.margin} onChange={v=>setLf(p=>({...p,margin:v}))} placeholder="e.g. 20"/></div>
+            <div style={{gridColumn:"1/-1"}}><div style={LBL}>Current Market Price per Unit</div><NI value={lf.mktPrice} onChange={v=>setLf(p=>({...p,mktPrice:v}))} placeholder="€ e.g. 280,000" style={GIS}/></div>
+            <div style={{gridColumn:"1/-1"}}><div style={LBL}>Notes</div><textarea value={lf.notes} onChange={e=>setLf(p=>({...p,notes:e.target.value}))} placeholder="Zoning, conditions, observations..." rows={2} style={{...IS,resize:"vertical",lineHeight:1.5}}/></div>
+          </div>
+        </div>
+        <div style={{padding:"18px",background:"#fafaf8"}}>
+          <div style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>Feasibility Results</div>
+          <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:18,padding:"14px",background:sigC+"15",borderRadius:8,border:`2px solid ${sigC}30`}}>
+            <div style={{width:44,height:44,borderRadius:"50%",background:sigC,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              <span style={{color:"white",fontSize:18,fontWeight:700}}>{LFC.sig==="green"?"✓":LFC.sig==="amber"?"!":"✗"}</span>
+            </div>
+            <div>
+              <div style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:15,fontWeight:700}}>{LFC.sig==="green"?"Viable at Target Margin":LFC.sig==="amber"?"Marginal — Review Carefully":"Below Target Margin"}</div>
+              <div style={{fontSize:11,color:"#888",marginTop:2}}>Asking: {fmt(lf.landPrice||0)} · Market: {fmt(lf.mktPrice||0)}/unit</div>
+            </div>
+          </div>
+          {[["Total Built Area",LFC.tb.toFixed(0)+" m²"],["Construction Cost",fmt(LFC.cc)],["Total Investment",fmt(LFC.ti)],["Required GDV",fmt(LFC.rGDV)],["Required Price / Unit",fmt(LFC.rPPU)],["Market GDV",fmt(LFC.mGDV)],["Achievable Net Profit",fmt(LFC.mNP)],["Achievable Margin",pct(LFC.mMarg)],["Max Land Price",fmt(LFC.maxL)],["Cost per Built m²",fmt(LFC.cpsm)]].map(([l,v],i)=>(
+            <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #f0ede6",alignItems:"baseline"}}>
+              <span style={{fontSize:12,color:"#666"}}>{l}</span>
+              <span style={{fontSize:i===4||i===8?14:13,fontWeight:i===4||i===8?700:600,color:i===4?G:i===8?(LFC.maxL>=n(lf.landPrice)?G:"#c0392b"):M}}>{v}</span>
+            </div>
+          ))}
+          <div style={{marginTop:14,padding:"13px",background:M,borderRadius:6}}>
+            <div style={{fontSize:10,color:GL,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:7}}>Agent Summary</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.8)",lineHeight:1.9}}>
+              {n(lf.mktPrice)>0&&n(lf.landPrice)>0?<>
+                To achieve <strong style={{color:GL}}>{lf.margin}%</strong> margin, units need to sell at <strong style={{color:GL}}>{fmt(LFC.rPPU)}</strong> each.<br/>
+                At current market prices, max land price is <strong style={{color:LFC.maxL>=n(lf.landPrice)?GL:"#e74c3c"}}>{fmt(LFC.maxL)}</strong>.<br/>
+                {LFC.maxL>=n(lf.landPrice)?"The asking price is within range.":"Asking price needs to come down by "+fmt(n(lf.landPrice)-LFC.maxL)+"."}
+              </>:<span style={{color:"rgba(255,255,255,0.4)"}}>Enter land price and market price per unit for full analysis.</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{padding:"13px 18px",background:M,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div><div style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:15}}>Max Land Price at {lf.margin}% Margin</div><div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:1}}>{lf.units||"?"} units at {fmt(lf.mktPrice||0)}/unit</div></div>
+        <div style={{fontFamily:"'Playfair Display',serif",color:LFC.maxL>0?GL:"rgba(255,255,255,0.2)",fontSize:22,fontWeight:700}}>{LFC.maxL>0?fmt(LFC.maxL):"Enter details"}</div>
+      </div>
+      <div style={{padding:"9px 18px",background:"#fafaf8",borderTop:"1px solid #f0ede6",fontSize:10,color:"#bbb",lineHeight:1.7}}>
+        Prepared by {lf.agentName||"Prestige Agent"} · Prestige Property Investment Ltd (C-98384) · {lf.date} · For indicative purposes only. Not a formal valuation.
+      </div>
+    </div>}
+
+    {tab==="plaster"&&<div style={CARD}>
+      <SH num="P" title="Plastering Estimator" subtitle="Walls and ceiling per floor — floor not included"/>
+      <div style={{padding:"13px 18px",borderBottom:"1px solid #f0ede6"}}>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",marginBottom:10}}>
+          <div>
+            <div style={LBL}>Mode</div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>setPMode("approx")} style={{padding:"6px 12px",borderRadius:4,border:`1px solid ${pMode==="approx"?G:"#ddd"}`,background:pMode==="approx"?GLA:"white",color:pMode==="approx"?M:"#999",fontSize:12,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>Approx</button>
+              <button onClick={()=>setPMode("manual")} style={{padding:"6px 12px",borderRadius:4,border:`1px solid ${pMode==="manual"?G:"#ddd"}`,background:pMode==="manual"?GLA:"white",color:pMode==="manual"?M:"#999",fontSize:12,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>Manual m²</button>
+            </div>
+          </div>
+          {pMode==="approx"&&<>
+            <div style={{minWidth:180}}>
+              <div style={LBL}>Wall Multiplier: {pMult}x (2.0 – 2.5)</div>
+              <input type="range" min="2.0" max="2.5" step="0.05" value={pMult} onChange={e=>setPMult(e.target.value)} style={{width:"100%"}}/>
+            </div>
+            <div style={{width:100}}><div style={LBL}>Floor Height (m)</div><NI value={pH} onChange={setPH} placeholder="2.7"/></div>
+          </>}
+          <div style={{width:110}}><div style={LBL}>Rate per m²</div><NI value={pRate} onChange={setPRate} placeholder="€/m²"/></div>
+          <div>
+            <div style={LBL}>Contingency</div>
+            <div style={{display:"flex",gap:5}}>{["10","15","20"].map(c=><button key={c} onClick={()=>setPCont(c)} style={{padding:"6px 10px",borderRadius:4,border:`1px solid ${pCont===c?G:"#ddd"}`,background:pCont===c?G:"white",color:pCont===c?"white":"#999",fontSize:12,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>{c}%</button>)}</div>
+          </div>
+        </div>
+        {pMode==="approx"&&<div style={{fontSize:11,color:"#999",padding:"7px 10px",background:"#f5f5f5",borderRadius:4}}>Walls = floor area × {pMult}x × {pH}m height, minus door deductions (0.9×2.1m each) and window deductions (1.2×1.4m each). Ceiling = floor area. Floor not included.</div>}
+      </div>
+      <div style={{padding:"9px 18px 4px"}}>
+        <div style={{display:"grid",gridTemplateColumns:pMode==="approx"?"50px 2fr 1fr 1fr 1fr 1fr 1fr":"50px 2fr 1fr 1fr 1fr",gap:7,paddingBottom:7,borderBottom:`2px solid rgba(184,150,12,0.2)`}}>
+          <ColH>On</ColH><ColH>Floor</ColH><ColH>Area (m²)</ColH>
+          {pMode==="approx"&&<><ColH>Doors</ColH><ColH>Windows</ColH></>}
+          {pMode==="manual"&&<ColH>Wall m²</ColH>}
+          <ColH>Walls</ColH><ColH>Ceiling</ColH><ColH>Total</ColH>
+        </div>
+        {pf.map(fl=>{const c=plCalc(fl);return(
+          <div key={fl.id} style={{display:"grid",gridTemplateColumns:pMode==="approx"?"50px 2fr 1fr 1fr 1fr 1fr 1fr":"50px 2fr 1fr 1fr 1fr",gap:7,padding:"7px 0",borderBottom:"1px solid #f5f2ec",alignItems:"center",opacity:fl.on?1:0.4}}>
+            <Tog on={fl.on} onChange={v=>upPF(fl.id,"on",v)}/>
+            <div style={{fontSize:13,fontWeight:600,color:M}}>{fl.label}</div>
+            <NI value={fl.area} onChange={v=>upPF(fl.id,"area",v)} disabled={!fl.on} placeholder="m²"/>
+            {pMode==="approx"&&<><NI value={fl.doors} onChange={v=>upPF(fl.id,"doors",v)} disabled={!fl.on} placeholder="0"/><NI value={fl.windows} onChange={v=>upPF(fl.id,"windows",v)} disabled={!fl.on} placeholder="0"/></>}
+            {pMode==="manual"&&<NI value={fl.mw||""} onChange={v=>upPF(fl.id,"mw",v)} disabled={!fl.on} placeholder="m²"/>}
+            <div style={{fontSize:12,fontWeight:600,color:fl.on&&c.walls>0?M:"#ddd",textAlign:"right"}}>{c.walls>0?c.walls.toFixed(1):"--"}</div>
+            <div style={{fontSize:12,fontWeight:600,color:fl.on&&c.ceiling>0?M:"#ddd",textAlign:"right"}}>{c.ceiling>0?c.ceiling.toFixed(1):"--"}</div>
+            <div style={{fontSize:13,fontWeight:700,color:fl.on&&c.total>0?G:"#ddd",textAlign:"right"}}>{c.total>0?c.total.toFixed(1):"--"}</div>
+          </div>
+        );})}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",borderTop:`2px solid rgba(184,150,12,0.2)`}}>
+        <KPI label="Total Walls" value={plTot.walls.toFixed(1)+" m²"}/>
+        <KPI label="Total Ceilings" value={plTot.ceiling.toFixed(1)+" m²"}/>
+        <KPI label="Sub-total" value={plTot.total.toFixed(1)+" m²"}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",borderTop:"1px solid #f0ede6"}}>
+        {[["+"+pCont+"% Contingency",plCont2.toFixed(1)+" m²"],["Grand Total",plGrand.toFixed(1)+" m²"],["Estimated Cost",n(pRate)>0?fmt(plCost):"Enter rate"]].map(([l,v],i)=>(
+          <div key={l} style={{padding:"12px 18px",textAlign:"center",borderRight:"1px solid rgba(184,150,12,0.15)",background:i===2?GLA:"white"}}>
+            <div style={{fontSize:10,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{l}</div>
+            <div style={{fontFamily:"'Playfair Display',serif",color:M,fontSize:i===2?17:15,fontWeight:700}}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{padding:"14px 18px",background:M,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div><div style={{fontFamily:"'Playfair Display',serif",color:"white",fontSize:15,fontWeight:600}}>Total Plastering Cost</div><div style={{color:"rgba(255,255,255,0.35)",fontSize:11,marginTop:1}}>{plGrand.toFixed(1)} m² incl. {pCont}% contingency</div></div>
+        <div style={{fontFamily:"'Playfair Display',serif",color:n(pRate)>0?GL:"rgba(255,255,255,0.2)",fontSize:20,fontWeight:700}}>{n(pRate)>0?fmt(plCost):"Enter rate per m²"}</div>
+      </div>
+    </div>}
+
+    {tab==="projects"&&<div style={CARD}>
+      <SH num="All" title="Projects" subtitle="All feasibility studies — auto-saved"/>
+      <div style={{padding:"12px 18px",display:"flex",gap:9,borderBottom:"1px solid #f0ede6"}}>
+        <button onClick={()=>{const p=defProject();setProjects(prev=>[...prev,p]);setCurId(p.id);setTab("calc");}} style={{padding:"8px 18px",background:M,color:"white",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:13}}>+ New Project</button>
+        <button onClick={dupProject} style={{padding:"8px 18px",background:"white",color:G,border:`1px solid ${G}`,borderRadius:4,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontWeight:600,fontSize:13}}>Duplicate Current</button>
+      </div>
+      {projects.map(p=>{const pc=calc(p),isA=p.id===curId;return(
+        <div key={p.id} style={{padding:"12px 18px",borderBottom:"1px solid #f0ede6",background:isA?GLA:"white",display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr auto",gap:10,alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:600,color:M}}>{p.name}</div>
+            <div style={{fontSize:11,color:"#aaa",marginTop:1}}>{p.site.address||"No address"} · {p.lastEdited}</div>
+          </div>
+          <div style={{textAlign:"center"}}><div style={{fontSize:9,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:2}}>Investment</div><div style={{fontSize:12,fontWeight:600,color:M}}>{fmt(pc.gt)}</div></div>
+          <div style={{textAlign:"center"}}><div style={{fontSize:9,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:2}}>Net Profit</div><div style={{fontSize:12,fontWeight:600,color:pc.np>=0?G:"#c0392b"}}>{fmt(pc.np)}</div></div>
+          <div style={{textAlign:"center"}}><div style={{fontSize:9,color:G,fontWeight:600,textTransform:"uppercase",letterSpacing:1,marginBottom:2}}>Margin</div><div style={{fontSize:12,fontWeight:600,color:pc.nm>=0?G:"#c0392b"}}>{pct(pc.nm)}</div></div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            {!isA&&<button onClick={()=>{setCurId(p.id);setTab("calc");}} style={{padding:"5px 12px",background:M,color:"white",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>Open</button>}
+            {isA&&<span style={{fontSize:10,color:G,fontWeight:600,padding:"5px 8px"}}>● Active</span>}
+            {projects.length>1&&<button onClick={()=>delProject(p.id)} style={{padding:"5px 8px",background:"none",border:"1px solid #eee",borderRadius:4,cursor:"pointer",color:"#bbb",fontSize:12}}>×</button>}
+          </div>
+        </div>
+      );})}
+    </div>}
+
+    </div>
+    <div className="print-footer" style={{padding:"7px 18px",borderTop:"1px solid #ddd",background:"white",fontSize:8,color:"#999",textAlign:"center",fontFamily:"sans-serif",lineHeight:1.6}}>
+      Prepared by Prestige Property Investment Ltd (C-98384) · 50/52, Vjal De Paule, Balzan BZN 9022, Malta · For indicative purposes only. Not a formal valuation. All figures subject to change. Seek independent advice. Confidential.
+    </div>
+  </div>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
